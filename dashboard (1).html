@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wazuh · Analyse IA en direct</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:            #0B0E11;
+    --panel:         #12171C;
+    --panel-border:  #1E262D;
+    --text:          #E8EDF1;
+    --text-dim:      #8B98A5;
+    --accent:        #3ED6B5;
+    --warn:          #F5A623;
+    --crit:          #E5484D;
+    --ok:            #3ED6B5;
+  }
+  *{ box-sizing:border-box; }
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--text);
+    font-family:'IBM Plex Sans', sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  header{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding:20px 32px;
+    border-bottom:1px solid var(--panel-border);
+    position:sticky;
+    top:0;
+    background:rgba(11,14,17,0.92);
+    backdrop-filter:blur(6px);
+    z-index:10;
+  }
+  .brand{ display:flex; align-items:baseline; gap:10px; }
+  .brand h1{
+    font-family:'JetBrains Mono', monospace;
+    font-size:16px;
+    font-weight:700;
+    letter-spacing:0.02em;
+    margin:0;
+  }
+  .brand span{ color:var(--text-dim); font-size:13px; font-family:'JetBrains Mono', monospace; }
+  .status{ display:flex; align-items:center; gap:8px; font-family:'JetBrains Mono', monospace; font-size:12px; color:var(--text-dim); }
+  .dot{
+    width:8px; height:8px; border-radius:50%;
+    background:var(--accent);
+    box-shadow:0 0 0 0 rgba(62,214,181,0.6);
+    animation:pulse 2s infinite;
+  }
+  @keyframes pulse{
+    0%{ box-shadow:0 0 0 0 rgba(62,214,181,0.55); }
+    70%{ box-shadow:0 0 0 8px rgba(62,214,181,0); }
+    100%{ box-shadow:0 0 0 0 rgba(62,214,181,0); }
+  }
+  main{ padding:28px 32px 64px; max-width:1200px; margin:0 auto; }
+  #empty{
+    color:var(--text-dim);
+    font-family:'JetBrains Mono', monospace;
+    font-size:13px;
+    padding:60px 0;
+    text-align:center;
+  }
+  .grid{
+    display:grid;
+    grid-template-columns:repeat(auto-fill, minmax(340px, 1fr));
+    gap:16px;
+  }
+  .card{
+    background:var(--panel);
+    border:1px solid var(--panel-border);
+    border-radius:6px;
+    padding:16px 18px;
+    position:relative;
+    overflow:hidden;
+  }
+  .card.new::before{
+    content:"";
+    position:absolute; inset:0;
+    border-radius:6px;
+    border:1px solid var(--accent);
+    animation:fadeRing 2.4s ease-out forwards;
+    pointer-events:none;
+  }
+  @keyframes fadeRing{
+    0%{ opacity:1; }
+    100%{ opacity:0; }
+  }
+  .card-top{
+    display:flex;
+    justify-content:space-between;
+    align-items:flex-start;
+    gap:10px;
+    margin-bottom:10px;
+  }
+  .score{
+    font-family:'JetBrains Mono', monospace;
+    font-weight:700;
+    font-size:20px;
+    padding:2px 10px;
+    border-radius:4px;
+    white-space:nowrap;
+  }
+  .score.low{ color:var(--ok); background:rgba(62,214,181,0.12); }
+  .score.mid{ color:var(--warn); background:rgba(245,166,35,0.12); }
+  .score.high{ color:var(--crit); background:rgba(229,72,77,0.12); }
+  .score.na{ color:var(--text-dim); background:rgba(139,152,165,0.1); }
+  .meta{ font-family:'JetBrains Mono', monospace; font-size:11px; color:var(--text-dim); line-height:1.6; }
+  .rule-desc{ font-size:14px; font-weight:500; margin:10px 0 8px; color:var(--text); }
+  .field{ font-size:13px; color:var(--text-dim); margin-top:6px; line-height:1.5; }
+  .field b{ color:var(--text); font-weight:600; }
+  .agent-badge{
+    font-family:'JetBrains Mono', monospace;
+    font-size:11px;
+    color:var(--text-dim);
+    border:1px solid var(--panel-border);
+    border-radius:4px;
+    padding:2px 8px;
+    white-space:nowrap;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <h1>WAZUH · ANALYSE IA</h1>
+    <span>flux temps réel — intégration native</span>
+  </div>
+  <div class="status">
+    <span class="dot"></span>
+    <span id="last-refresh">connexion…</span>
+  </div>
+</header>
+
+<main>
+  <div id="empty" style="display:none;">Aucune alerte analysée pour l'instant.</div>
+  <div class="grid" id="grid"></div>
+</main>
+
+<script>
+const REFRESH_MS = 5000;
+let knownIds = new Set();
+let firstLoad = true;
+
+function scoreClass(score){
+  if(score === null || score === undefined) return "na";
+  if(score >= 7) return "high";
+  if(score >= 4) return "mid";
+  return "low";
+}
+
+function escapeHtml(str){
+  if(str === null || str === undefined) return "";
+  return String(str)
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+function renderCard(alert){
+  const cls = scoreClass(alert.ai_score);
+  const scoreLabel = alert.ai_score !== null && alert.ai_score !== undefined ? alert.ai_score + "/10" : "—";
+  const isNew = !knownIds.has(alert.id) && !firstLoad;
+  const el = document.createElement("div");
+  el.className = "card" + (isNew ? " new" : "");
+  el.innerHTML = `
+    <div class="card-top">
+      <span class="score ${cls}">${scoreLabel}</span>
+      <span class="agent-badge">${escapeHtml(alert.agent_name || "—")}</span>
+    </div>
+    <div class="meta">niveau ${escapeHtml(alert.rule_level)} · règle ${escapeHtml(alert.rule_id)} · ${escapeHtml(alert.processed_at)}</div>
+    <div class="rule-desc">${escapeHtml(alert.rule_description)}</div>
+    <div class="field"><b>Cause</b> — ${escapeHtml(alert.ai_cause)}</div>
+    <div class="field"><b>Explication</b> — ${escapeHtml(alert.ai_explication)}</div>
+    <div class="field"><b>Actions</b> — ${escapeHtml(alert.ai_actions)}</div>
+  `;
+  return el;
+}
+
+async function refresh(){
+  try{
+    const res = await fetch("/api/alerts");
+    const alerts = await res.json();
+    const grid = document.getElementById("grid");
+    const empty = document.getElementById("empty");
+
+    if(alerts.length === 0){
+      grid.innerHTML = "";
+      empty.style.display = "block";
+    } else {
+      empty.style.display = "none";
+      grid.innerHTML = "";
+      alerts.forEach(a => grid.appendChild(renderCard(a)));
+    }
+
+    knownIds = new Set(alerts.map(a => a.id));
+    firstLoad = false;
+    document.getElementById("last-refresh").textContent =
+      "actualisé " + new Date().toLocaleTimeString('fr-FR');
+  } catch(e){
+    document.getElementById("last-refresh").textContent = "connexion perdue…";
+  }
+}
+
+refresh();
+setInterval(refresh, REFRESH_MS);
+</script>
+
+</body>
+</html>

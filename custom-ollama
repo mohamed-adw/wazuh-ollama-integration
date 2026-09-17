@@ -1,0 +1,43 @@
+#!/bin/sh
+# custom-ollama
+#
+# Wrapper appelé de façon SYNCHRONE par wazuh-integratord à chaque alerte
+# matchée (voir <integration> dans ossec.conf). Son seul rôle est de
+# déléguer le vrai travail (appel Ollama, potentiellement 10-140s) à un
+# processus en arrière-plan, puis de rendre la main IMMÉDIATEMENT pour ne
+# jamais bloquer le traitement des alertes suivantes.
+#
+# Args reçus de wazuh-integratord (convention standard des intégrations) :
+#   $1 = chemin du fichier temporaire contenant l'alerte (JSON)
+#   $2 = api_key (vide si non configurée dans ossec.conf)
+#   $3 = hook_url (vide si non configurée dans ossec.conf)
+#   $4 = options (vide en général)
+
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+WORKER="$SCRIPT_DIR/custom-ollama.py"
+LOG_DIR="/var/ossec/logs/integrations"
+LOG_FILE="$LOG_DIR/custom-ollama.log"
+
+mkdir -p "$LOG_DIR" 2>/dev/null
+
+# Le fichier d'alerte temporaire fourni par integratord est supprimé par
+# Wazuh juste après l'appel de ce wrapper -> on doit en faire une copie
+# AVANT de partir en arrière-plan, sinon le worker lira un fichier déjà
+# effacé.
+ALERT_FILE="$1"
+API_KEY="$2"
+HOOK_URL="$3"
+
+if [ -n "$ALERT_FILE" ] && [ -f "$ALERT_FILE" ]; then
+    COPY="/tmp/wazuh-ollama-$$-$(date +%s%N).json"
+    cp "$ALERT_FILE" "$COPY" 2>/dev/null
+else
+    exit 0
+fi
+
+# Lancement en arrière-plan, détaché : le wrapper (et donc integratord)
+# ne reste jamais en attente de la réponse d'Ollama.
+nohup python3 "$WORKER" "$COPY" "$API_KEY" "$HOOK_URL" >> "$LOG_FILE" 2>&1 &
+disown 2>/dev/null
+
+exit 0

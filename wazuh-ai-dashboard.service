@@ -1,0 +1,14 @@
+[Unit]
+Description=Wazuh AI Dashboard (Flask) - visualisation temps reel des analyses Ollama
+After=network.target
+
+[Service]
+User=sysadmin
+WorkingDirectory=/home/sysadmin/wazuh_native_integration/dashboard
+Environment="WAZUH_AI_DB=/var/ossec/integrations/data/alerts.db"
+ExecStart=/usr/bin/python3 /home/sysadmin/wazuh_native_integration/dashboard/app.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
