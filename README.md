@@ -56,6 +56,8 @@ wazuh-ollama-integration/
 ├── requirements.txt
 ├── wazuh-ai-dashboard.service
 └── README.md
+└── wazuh_ollama_connector.py
+└── .env.example
 ```
 
 ### Rôle des principaux fichiers
