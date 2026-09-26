@@ -739,7 +739,7 @@ Il est donc nécessaire de surveiller :
 Le seuil actuel est :
 
 ```text
-ALERT_LEVEL_THRESHOLD=7
+ALERT_LEVEL_THRESHOLD>=7
 ```
 
 Un seuil trop faible peut entraîner un volume important d'analyses IA.
