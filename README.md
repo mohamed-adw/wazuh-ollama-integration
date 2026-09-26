@@ -1,42 +1,59 @@
-# Intégration native Wazuh → Ollama → Dashboard
+# Intégration Wazuh → Ollama → Dashboard
 
-Ce projet met en œuvre une intégration native entre **Wazuh**, **Ollama** et un **dashboard Flask** afin d'enrichir automatiquement les alertes de sécurité à l'aide du modèle de langage **Mistral 7B**.
+Ce projet met en œuvre une intégration entre **Wazuh**, **Ollama**, **Mistral 7B** et un **dashboard Flask** afin d'enrichir les alertes de sécurité à l'aide d'un modèle de langage exécuté localement.
 
-L'architecture utilise le mécanisme officiel `<integration>` de Wazuh. Contrairement à une approche basée sur un polling périodique par cron, le connecteur est déclenché lorsqu'une alerte correspondant aux critères configurés est générée par Wazuh.
+L'objectif est de fournir aux analystes une analyse complémentaire des alertes Wazuh comprenant notamment :
+
+- une explication de l'événement ;
+- un score de dangerosité ;
+- une cause probable ;
+- des actions recommandées.
+
+Le modèle **Mistral 7B** est exécuté localement avec **Ollama**. Aucune API d'inférence distante n'est nécessaire.
+
+---
 
 ## Architecture
 
+L'architecture du projet est organisée autour de Wazuh, du connecteur Python, d'Ollama/Mistral 7B, d'une base SQLite et d'un dashboard Flask.
+
 ```text
-Wazuh (analysisd / integratord)
-        │
-        ▼
-/var/ossec/integrations/custom-ollama
-        │
-        │ Wrapper synchrone
-        │
-        ▼
-custom-ollama.py
-        │
-        │ Traitement asynchrone
-        ▼
-Ollama
-        │
-        ▼
-Mistral 7B
-        │
-        ▼
-SQLite (WAL)
-        │
-        ▼
-Dashboard Flask (app.py)
-        │
-        ▼
-dashboard.html
-        │
-        └── Auto-refresh JavaScript (5 s)
+                         Wazuh
+                           │
+                           ▼
+                  Wazuh Indexer
+                           │
+                           ▼
+             wazuh_ollama_connector.py
+                           │
+                           ▼
+                    Ollama API
+                           │
+                           ▼
+                      Mistral 7B
+                           │
+                           ▼
+                    Analyse IA
+                           │
+                           ▼
+                     SQLite
+                    alerts.db
+                           │
+                           ▼
+                       app.py
+                    Flask Dashboard
+                           │
+                           ▼
+                    dashboard.html
+                           │
+                           ▼
+                 Auto-refresh JavaScript
+                         (5 s)
 ```
 
-Le modèle Ollama est exécuté localement sur le serveur. L'API utilisée par le connecteur est donc :
+Le modèle Ollama est exécuté localement sur le serveur.
+
+L'API utilisée par le connecteur est :
 
 ```text
 http://localhost:11434
@@ -44,7 +61,9 @@ http://localhost:11434
 
 Aucun appel à une API d'inférence distante n'est nécessaire.
 
-## Structure du projet
+---
+
+# Structure du projet
 
 ```text
 wazuh-ollama-integration/
@@ -52,90 +71,205 @@ wazuh-ollama-integration/
 ├── app.py
 ├── custom-ollama
 ├── custom-ollama.py
+├── wazuh_ollama_connector.py
 ├── dashboard.html
 ├── requirements.txt
 ├── wazuh-ai-dashboard.service
+├── .env.example
 └── README.md
-└── wazuh_ollama_connector.py
-└── .env.example
 ```
 
-### Rôle des principaux fichiers
+## Rôle des principaux fichiers
 
 | Fichier | Rôle |
 |---|---|
 | `custom-ollama` | Wrapper d'intégration appelé par Wazuh |
-| `custom-ollama.py` | Traitement des alertes et communication avec Ollama |
+| `custom-ollama.py` | Gestion du déclenchement de l'intégration et transmission du traitement au connecteur |
+| `wazuh_ollama_connector.py` | Connecteur principal chargé de récupérer les alertes Wazuh, de sélectionner les alertes selon le seuil configuré, de transmettre les événements à Ollama/Mistral 7B et d'enregistrer les résultats dans SQLite |
 | `app.py` | Application web Flask du dashboard |
 | `dashboard.html` | Interface d'affichage des alertes enrichies |
-| `requirements.txt` | Dépendances Python |
-| `wazuh-ai-dashboard.service` | Service systemd du dashboard |
-| `README.md` | Documentation du projet |
+| `requirements.txt` | Dépendances Python nécessaires au projet |
+| `wazuh-ai-dashboard.service` | Service systemd permettant d'exécuter le dashboard Flask |
+| `.env.example` | Exemple de configuration des variables d'environnement utilisées par le connecteur |
+| `README.md` | Documentation et procédure d'installation du projet |
 
-## 1. Installation du script d'intégration
+---
 
-Copier les scripts dans le répertoire officiel des intégrations Wazuh :
+# 1. Prérequis
 
-```bash
-sudo cp custom-ollama /var/ossec/integrations/
-sudo cp custom-ollama.py /var/ossec/integrations/
-```
+Le projet nécessite :
 
-Appliquer les permissions nécessaires :
+- Wazuh ;
+- Wazuh Indexer ;
+- Python 3 ;
+- Ollama ;
+- Mistral 7B ;
+- SQLite ;
+- Flask ;
+- les dépendances Python indiquées dans `requirements.txt`.
 
-```bash
-sudo chown root:wazuh /var/ossec/integrations/custom-ollama*
-sudo chmod 750 /var/ossec/integrations/custom-ollama*
-```
+Le serveur utilisé pour la démonstration fonctionne avec une exécution du modèle sur **CPU**.
 
-Créer le répertoire utilisé pour la base SQLite :
+---
 
-```bash
-sudo mkdir -p /var/ossec/integrations/data
-sudo chown wazuh:wazuh /var/ossec/integrations/data
-sudo chmod 770 /var/ossec/integrations/data
-```
+# 2. Installation du connecteur
 
-Si nécessaire, ajouter l'utilisateur utilisé pour le dashboard au groupe `wazuh` :
-
-```bash
-sudo usermod -aG wazuh sysadmin
-```
-
-Une reconnexion de l'utilisateur peut être nécessaire pour que la modification du groupe soit prise en compte.
-
-## 2. Configuration de Wazuh
-
-La configuration de l'intégration est ajoutée dans :
+Le fichier principal du traitement IA est :
 
 ```text
-/var/ossec/etc/ossec.conf
+wazuh_ollama_connector.py
 ```
 
-Exemple de configuration :
+Il est chargé de :
 
-```xml
-<integration>
-    <name>custom-ollama</name>
-    ...
-</integration>
-```
+1. charger la configuration ;
+2. interroger le Wazuh Indexer ;
+3. sélectionner les alertes à analyser ;
+4. construire le prompt ;
+5. transmettre l'événement à Ollama ;
+6. récupérer la réponse de Mistral 7B ;
+7. extraire les informations produites par le modèle ;
+8. enregistrer les résultats dans SQLite.
 
-Après modification :
+---
+
+## 2.1 Installation des dépendances Python
+
+Installer les dépendances du projet :
 
 ```bash
-sudo systemctl restart wazuh-manager
+pip3 install -r requirements.txt --break-system-packages
 ```
 
-Pour les tests initiaux, il est possible d'utiliser un seuil de niveau de règle faible, par exemple :
+Les principales bibliothèques utilisées par le connecteur sont :
 
-```xml
-<level>3</level>
+- `requests`
+- `python-dotenv`
+
+Le dashboard utilise notamment :
+
+- `Flask`
+
+---
+
+# 3. Configuration avec `.env`
+
+Le dépôt contient un fichier :
+
+```text
+.env.example
 ```
 
-Une fois l'intégration validée, le seuil peut être adapté aux besoins de supervision afin d'éviter de générer un volume excessif d'analyses IA.
+Ce fichier sert uniquement de modèle de configuration.
 
-## 3. Installation d'Ollama et de Mistral 7B
+Créer le fichier local `.env` :
+
+```bash
+cp .env.example .env
+```
+
+Puis modifier les valeurs nécessaires.
+
+Exemple :
+
+```env
+# --- Wazuh Indexer (OpenSearch) ---
+WAZUH_INDEXER_HOST=https://localhost:9200
+WAZUH_INDEXER_USER=admin
+WAZUH_INDEXER_PASSWORD=CHANGE_ME
+
+# --- Ollama (LLM local) ---
+OLLAMA_HOST=http://localhost:11434
+OLLAMA_MODEL=mistral:7b
+
+# --- Filtre des alertes ---
+# Niveau de sévérité minimum à analyser par l'IA (Wazuh : 0-15)
+ALERT_LEVEL_THRESHOLD=7
+
+# --- Nombre max d'alertes à traiter par exécution ---
+MAX_ALERTS_PER_RUN=10
+
+# --- Paramètres Ollama ---
+OLLAMA_TIMEOUT=240
+OLLAMA_KEEP_ALIVE=30m
+
+# --- Base de données SQLite ---
+WAZUH_AI_DB=/var/ossec/integrations/data/alerts.db
+```
+
+## Paramètres principaux
+
+| Variable | Valeur par défaut | Fonction |
+|---|---:|---|
+| `WAZUH_INDEXER_HOST` | `https://localhost:9200` | Adresse du Wazuh Indexer |
+| `WAZUH_INDEXER_USER` | `admin` | Utilisateur du Wazuh Indexer |
+| `WAZUH_INDEXER_PASSWORD` | `CHANGE_ME` | Mot de passe du Wazuh Indexer |
+| `OLLAMA_HOST` | `http://localhost:11434` | Adresse de l'API Ollama |
+| `OLLAMA_MODEL` | `mistral:7b` | Modèle utilisé pour l'analyse |
+| `ALERT_LEVEL_THRESHOLD` | `7` | Niveau minimal des alertes analysées |
+| `MAX_ALERTS_PER_RUN` | `10` | Nombre maximal d'alertes traitées |
+| `OLLAMA_TIMEOUT` | `240` | Délai maximal d'attente en secondes |
+| `OLLAMA_KEEP_ALIVE` | `30m` | Durée de maintien du modèle en mémoire |
+| `WAZUH_AI_DB` | `/var/ossec/integrations/data/alerts.db` | Chemin de la base SQLite |
+
+### Seuil de sélection
+
+Le connecteur sélectionne les alertes dont le niveau de règle Wazuh est :
+
+```text
+rule.level >= 7
+```
+
+Le paramètre :
+
+```env
+ALERT_LEVEL_THRESHOLD=7
+```
+
+permet de modifier ce seuil.
+
+Le nombre d'alertes traitées par exécution est limité par :
+
+```env
+MAX_ALERTS_PER_RUN=10
+```
+
+Cette limitation permet de maîtriser la charge du serveur lorsque le traitement du modèle est réalisé sur CPU.
+
+---
+
+# 4. Sécurité de la configuration
+
+Le fichier `.env` peut contenir des informations sensibles, notamment le mot de passe du Wazuh Indexer.
+
+Il ne doit donc pas être publié dans le dépôt Git.
+
+Ne jamais versionner :
+
+```text
+.env
+```
+
+Le fichier suivant peut être versionné :
+
+```text
+.env.example
+```
+
+car il ne contient pas de mot de passe réel.
+
+Ne jamais publier :
+
+- les mots de passe ;
+- les clés privées ;
+- les tokens d'accès ;
+- les fichiers `.env` contenant des secrets ;
+- les bases SQLite contenant des données sensibles ;
+- les informations d'infrastructure interne non nécessaires au fonctionnement du projet.
+
+---
+
+# 5. Installation d'Ollama et de Mistral 7B
 
 Installer Ollama sur le serveur :
 
@@ -161,63 +295,411 @@ Tester le modèle :
 ollama run mistral:7b
 ```
 
-Vérifier également que l'API Ollama est accessible localement :
+Vérifier que l'API Ollama est accessible :
 
 ```bash
 curl http://localhost:11434/api/tags
 ```
 
-Le connecteur utilise l'API locale d'Ollama pour transmettre les informations des alertes au modèle.
+Le connecteur utilise cette API locale pour transmettre les événements au modèle.
 
-## 4. Test manuel de l'intégration
+---
 
-Avant d'attendre une nouvelle alerte Wazuh, il est possible de tester manuellement le connecteur :
+# 6. Fonctionnement de `wazuh_ollama_connector.py`
 
-```bash
-sudo /var/ossec/integrations/custom-ollama \
-    /var/ossec/logs/alerts/alerts.json \
-    "" \
-    "http://localhost:11434"
+Le connecteur fonctionne selon les étapes suivantes :
+
+```text
+Wazuh Indexer
+      │
+      ▼
+Récupération des alertes
+      │
+      ▼
+Filtre rule.level >= 7
+      │
+      ▼
+Maximum 10 alertes
+      │
+      ▼
+Construction du prompt
+      │
+      ▼
+Ollama
+      │
+      ▼
+Mistral 7B
+      │
+      ▼
+Analyse de l'alerte
+      │
+      ├── Score de dangerosité
+      ├── Cause probable
+      ├── Explication
+      └── Actions recommandées
+      │
+      ▼
+SQLite
 ```
 
-Suivre ensuite le journal du connecteur :
+Le traitement est effectué localement.
 
-```bash
-tail -f /var/ossec/logs/integrations/custom-ollama.log
+Les données de l'alerte sont transmises à l'instance Ollama présente sur le serveur :
+
+```text
+http://localhost:11434
 ```
 
-La base SQLite peut être vérifiée avec :
+---
+
+## 6.1 Analyse produite par Mistral 7B
+
+Le modèle reçoit les informations pertinentes de l'alerte Wazuh et produit une réponse structurée contenant :
+
+```text
+EXPLICATION:
+...
+
+SCORE_DANGEROSITE:
+...
+
+CAUSE_PROBABLE:
+...
+
+ACTIONS_RECOMMANDEES:
+...
+```
+
+Le connecteur extrait ensuite ces différents éléments afin de les enregistrer dans SQLite.
+
+Le score de dangerosité est compris entre :
+
+```text
+1 et 10
+```
+
+Il constitue une estimation complémentaire au niveau `rule.level` fourni par Wazuh.
+
+---
+
+# 7. Base de données SQLite
+
+Les résultats sont enregistrés dans :
+
+```text
+/var/ossec/integrations/data/alerts.db
+```
+
+Le connecteur crée automatiquement la table `alerts` si elle n'existe pas.
+
+La structure utilisée contient notamment :
+
+| Colonne | Description |
+|---|---|
+| `id` | Identifiant interne |
+| `alert_id` | Identifiant de l'alerte Wazuh |
+| `timestamp` | Date de l'événement |
+| `agent_name` | Nom de l'agent Wazuh |
+| `rule_id` | Identifiant de la règle |
+| `rule_level` | Niveau de la règle Wazuh |
+| `rule_description` | Description de la règle |
+| `ai_score` | Score de dangerosité produit par l'IA |
+| `ai_cause` | Cause probable |
+| `ai_explication` | Explication de l'événement |
+| `ai_actions` | Actions recommandées |
+| `status` | État du traitement |
+| `processed_at` | Date du traitement IA |
+
+---
+
+## 7.1 Création du répertoire SQLite
+
+Créer le répertoire :
+
+```bash
+sudo mkdir -p /var/ossec/integrations/data
+```
+
+Appliquer les permissions :
+
+```bash
+sudo chown wazuh:wazuh /var/ossec/integrations/data
+sudo chmod 770 /var/ossec/integrations/data
+```
+
+Si nécessaire, ajouter l'utilisateur du dashboard au groupe `wazuh` :
+
+```bash
+sudo usermod -aG wazuh sysadmin
+```
+
+Une reconnexion peut être nécessaire pour que la modification du groupe soit prise en compte.
+
+---
+
+# 8. Installation de l'intégration Wazuh
+
+Les fichiers utilisés par l'intégration Wazuh sont :
+
+```text
+custom-ollama
+custom-ollama.py
+```
+
+Les copier dans le répertoire officiel des intégrations :
+
+```bash
+sudo cp custom-ollama /var/ossec/integrations/
+sudo cp custom-ollama.py /var/ossec/integrations/
+```
+
+Appliquer les permissions :
+
+```bash
+sudo chown root:wazuh /var/ossec/integrations/custom-ollama*
+sudo chmod 750 /var/ossec/integrations/custom-ollama*
+```
+
+Le connecteur Python peut également être placé dans le même répertoire lorsqu'il est utilisé directement par l'intégration :
+
+```bash
+sudo cp wazuh_ollama_connector.py /var/ossec/integrations/
+```
+
+Puis appliquer les permissions :
+
+```bash
+sudo chown root:wazuh /var/ossec/integrations/wazuh_ollama_connector.py
+sudo chmod 750 /var/ossec/integrations/wazuh_ollama_connector.py
+```
+
+---
+
+# 9. Configuration de Wazuh
+
+La configuration de l'intégration est réalisée dans :
+
+```text
+/var/ossec/etc/ossec.conf
+```
+
+Exemple :
+
+```xml
+<integration>
+    <name>custom-ollama</name>
+    ...
+</integration>
+```
+
+Après modification :
+
+```bash
+sudo systemctl restart wazuh-manager
+```
+
+Le seuil de déclenchement configuré dans Wazuh peut être adapté aux besoins de supervision.
+
+Exemple pour les tests :
+
+```xml
+<level>3</level>
+```
+
+Le connecteur applique ensuite son propre seuil d'analyse défini par :
+
+```env
+ALERT_LEVEL_THRESHOLD=7
+```
+
+---
+
+# 10. Test du connecteur
+
+Le connecteur peut être testé directement :
+
+```bash
+python3 wazuh_ollama_connector.py
+```
+
+Avant le lancement, vérifier que :
+
+- Ollama fonctionne ;
+- Mistral 7B est installé ;
+- Wazuh Indexer est accessible ;
+- le fichier `.env` est correctement configuré.
+
+Vérifier Ollama :
+
+```bash
+systemctl status ollama
+```
+
+Vérifier le modèle :
+
+```bash
+ollama list
+```
+
+Vérifier l'API :
+
+```bash
+curl http://localhost:11434/api/tags
+```
+
+---
+
+# 11. Vérification de la base SQLite
+
+Après une analyse, vérifier les résultats :
 
 ```bash
 sqlite3 /var/ossec/integrations/data/alerts.db \
     "SELECT id, rule_level, ai_score, ai_cause FROM alerts ORDER BY id DESC LIMIT 5;"
 ```
 
-## 5. Dashboard Flask
+Une ligne peut notamment contenir :
 
-Le dashboard est développé avec **Flask** et permet d'afficher les alertes Wazuh enrichies par l'analyse du modèle Mistral 7B.
-
-Installer les dépendances :
-
-```bash
-pip3 install -r requirements.txt --break-system-packages
+```text
+id
+rule_level
+ai_score
+ai_cause
 ```
 
-Lancer le dashboard manuellement pour effectuer un test :
+Les autres informations sont disponibles dans les différentes colonnes de la table `alerts`.
+
+---
+
+# 12. Gestion des erreurs
+
+Le connecteur gère notamment les situations suivantes :
+
+- indisponibilité du Wazuh Indexer ;
+- réponse invalide du Wazuh Indexer ;
+- indisponibilité d'Ollama ;
+- dépassement du délai d'attente ;
+- réponse vide du modèle ;
+- réponse JSON invalide ;
+- absence du score de dangerosité.
+
+En cas d'échec de l'analyse IA, le traitement de l'alerte n'empêche pas le fonctionnement général de Wazuh.
+
+Le traitement IA constitue donc une couche complémentaire à la supervision.
+
+---
+
+# 13. Performances
+
+Le serveur de démonstration utilisé pour le projet fonctionne en **CPU-only**.
+
+Les performances dépendent notamment :
+
+- des ressources CPU ;
+- de la mémoire disponible ;
+- du nombre d'alertes à traiter ;
+- du temps d'inférence de Mistral 7B ;
+- du chargement initial du modèle.
+
+La configuration limite le nombre d'alertes traitées par exécution :
+
+```env
+MAX_ALERTS_PER_RUN=10
+```
+
+Le délai d'attente d'Ollama est configuré à :
+
+```env
+OLLAMA_TIMEOUT=240
+```
+
+Le modèle peut rester chargé pendant :
+
+```env
+OLLAMA_KEEP_ALIVE=30m
+```
+
+Ces paramètres sont adaptés à l'environnement de démonstration et peuvent être ajustés selon les ressources disponibles.
+
+---
+
+# 14. Dashboard Flask
+
+Le dashboard est développé avec **Flask**.
+
+Il récupère les résultats enregistrés dans SQLite et les affiche dans une interface web.
+
+Le fichier principal est :
+
+```text
+app.py
+```
+
+L'interface est définie dans :
+
+```text
+dashboard.html
+```
+
+---
+
+## 14.1 Lancement du dashboard
+
+Lancer le dashboard manuellement :
 
 ```bash
 python3 app.py
 ```
 
-Le dashboard est alors accessible sur le port :
+Le serveur Flask écoute sur :
 
 ```text
 8080
 ```
 
-L'interface récupère les données enregistrées dans SQLite et actualise automatiquement l'affichage.
+Le dashboard peut alors être consulté depuis :
 
-## 6. Déploiement avec systemd
+```text
+http://localhost:8080
+```
+
+ou depuis l'adresse IP du serveur :
+
+```text
+http://ADRESSE_IP_DU_SERVEUR:8080
+```
+
+---
+
+# 15. API du dashboard
+
+Le dashboard fournit notamment :
+
+```text
+GET /
+```
+
+pour afficher l'interface web.
+
+Il fournit également :
+
+```text
+GET /api/alerts
+```
+
+pour récupérer les alertes enregistrées au format JSON.
+
+L'interface JavaScript interroge automatiquement cette API afin d'actualiser les données.
+
+L'actualisation est réalisée toutes les :
+
+```text
+5 secondes
+```
+
+---
+
+# 16. Déploiement avec systemd
 
 Pour exécuter le dashboard de manière persistante, copier le service systemd :
 
@@ -245,123 +727,186 @@ sudo systemctl status wazuh-ai-dashboard
 
 Le service permet au dashboard de démarrer automatiquement avec le serveur et de redémarrer en cas d'arrêt du processus.
 
-## 7. Fonctionnement de l'intégration
+---
 
-Lorsqu'une alerte correspondant aux critères configurés est générée par Wazuh :
+# 17. Fonctionnement global
 
-1. `wazuh-analysisd` analyse l'événement.
-2. `wazuh-integratord` déclenche l'intégration configurée.
-3. Le wrapper `custom-ollama` est exécuté.
-4. Le traitement de l'alerte est transmis à `custom-ollama.py`.
-5. Le script communique avec l'API locale d'Ollama.
-6. Le modèle **Mistral 7B** analyse les informations de l'alerte.
-7. Le résultat de l'analyse est enregistré dans SQLite.
-8. Le dashboard Flask récupère les données.
-9. L'interface présente l'alerte enrichie à l'utilisateur.
-
-Cette architecture permet de traiter les alertes sans dépendre d'un mécanisme de polling périodique.
-
-## 8. Gestion du traitement IA
-
-Le traitement du modèle est effectué de manière asynchrone afin de ne pas bloquer durablement le mécanisme de déclenchement de l'intégration Wazuh.
-
-Le temps de traitement dépend notamment :
-
-- de la charge du serveur ;
-- du nombre d'alertes à traiter ;
-- des ressources CPU et RAM disponibles ;
-- du temps d'inférence de Mistral 7B.
-
-Dans l'environnement de test utilisé pour ce projet, l'inférence est réalisée sur CPU.
-
-## 9. Base de données SQLite
-
-Les résultats d'analyse sont enregistrés dans une base SQLite située dans :
+Lorsqu'une alerte correspondant aux critères configurés est disponible dans Wazuh :
 
 ```text
-/var/ossec/integrations/data/alerts.db
+1. Wazuh génère et enregistre l'alerte
+              │
+              ▼
+2. Wazuh Indexer stocke l'événement
+              │
+              ▼
+3. Le connecteur récupère les alertes sélectionnées
+              │
+              ▼
+4. rule.level >= ALERT_LEVEL_THRESHOLD
+              │
+              ▼
+5. Construction du prompt
+              │
+              ▼
+6. Ollama reçoit l'événement
+              │
+              ▼
+7. Mistral 7B analyse l'alerte
+              │
+              ▼
+8. Le connecteur extrait les résultats
+              │
+              ▼
+9. SQLite enregistre l'analyse
+              │
+              ▼
+10. Flask récupère les données
+              │
+              ▼
+11. Dashboard affiche l'alerte enrichie
 ```
 
-Le mode **WAL (Write-Ahead Logging)** est utilisé afin de faciliter les opérations de lecture et d'écriture concurrentes.
+Cette architecture permet d'ajouter une couche d'analyse IA aux alertes Wazuh tout en conservant l'exécution du modèle dans l'infrastructure locale.
 
-Le dashboard Flask peut ainsi consulter les résultats pendant que de nouvelles analyses sont enregistrées.
+---
 
-## 10. Ancienne architecture basée sur le polling
+# 18. Traitement de l'intelligence artificielle
 
-Une première approche du projet reposait sur une exécution périodique via cron, par exemple :
+Le traitement du modèle est effectué localement avec Ollama.
+
+Le connecteur transmet au modèle les informations nécessaires à l'analyse de l'événement.
+
+Mistral 7B produit ensuite :
+
+```text
+Score de dangerosité
+        +
+Explication
+        +
+Cause probable
+        +
+Actions recommandées
+```
+
+Les résultats sont ensuite stockés dans SQLite et affichés dans le dashboard.
+
+L'analyse produite par le modèle doit être considérée comme une aide à l'analyse et doit être vérifiée par un analyste de sécurité avant toute action.
+
+---
+
+# 19. Ancienne approche basée sur le polling
+
+Une première approche du projet reposait sur une exécution périodique du traitement, notamment via cron.
+
+Exemple :
 
 ```text
 */10 * * * *
 ```
 
-Cette approche a été remplacée par le mécanisme natif `<integration>` de Wazuh.
+Cette approche permettait de lancer périodiquement le traitement des alertes.
 
-L'architecture actuelle permet ainsi un déclenchement directement lié à la génération des alertes correspondant aux critères définis dans Wazuh, sans dépendre d'une interrogation périodique des fichiers d'alertes.
+La configuration actuelle s'appuie sur les composants d'intégration Wazuh et sur le connecteur Python pour assurer le traitement des événements sélectionnés.
 
-## 11. Décommissionnement de l'ancien système
+Les anciennes tâches cron utilisées uniquement pour l'ancien système peuvent être supprimées après validation de la nouvelle architecture.
 
-Une fois la nouvelle intégration validée, l'ancien mécanisme de polling peut être désactivé :
+---
+
+# 20. Décommissionnement de l'ancien système
+
+Si une ancienne tâche cron est encore configurée :
 
 ```bash
 crontab -e
 ```
 
-Supprimer l'ancienne tâche cron liée au connecteur.
+Supprimer l'ancienne tâche liée au traitement des alertes lorsque la nouvelle architecture a été validée.
 
-Si un ancien serveur de rapports était utilisé, son service peut également être arrêté après validation :
+Si un ancien service de rapports était utilisé et n'est plus nécessaire :
 
 ```bash
 sudo systemctl disable --now wazuh-reports
 ```
 
-Les anciens rapports JSON/HTML peuvent être conservés à titre d'archive pour permettre une comparaison avec la nouvelle architecture.
+Les anciens rapports JSON ou HTML peuvent être conservés comme archives si nécessaire.
 
-## Points de vigilance
+---
 
-### Charge simultanée
+# 21. Points de vigilance
 
-Lorsque plusieurs alertes sont générées simultanément, plusieurs traitements peuvent être lancés.
+## Charge du serveur
 
-Sur une infrastructure fonctionnant uniquement sur CPU, plusieurs appels concurrents à Ollama peuvent augmenter le temps de traitement.
+L'exécution de Mistral 7B sur CPU peut entraîner un temps d'inférence important.
 
-Il est donc nécessaire de surveiller la charge du serveur et le temps d'inférence.
+Il est donc nécessaire de surveiller :
 
-Une évolution possible consiste à mettre en place une véritable file d'attente afin de contrôler le nombre de traitements IA simultanés.
+- l'utilisation CPU ;
+- la mémoire RAM ;
+- le nombre d'alertes ;
+- le temps de traitement ;
+- la disponibilité d'Ollama.
 
-### Nettoyage de la base
+## Nombre d'alertes
 
-Aucune purge automatique des anciennes alertes n'est actuellement imposée par le projet.
+Le nombre d'alertes traitées est limité par :
 
-Pour une utilisation à long terme, une politique de rétention ou de rotation de la base SQLite peut être mise en place afin de limiter sa croissance.
+```env
+MAX_ALERTS_PER_RUN=10
+```
 
-### Seuil de déclenchement
+Cette limitation permet de réduire la charge lors des traitements.
 
-Le niveau de règle utilisé pendant les tests doit être adapté à l'environnement de production.
+## Seuil de sélection
 
-Un seuil trop faible peut entraîner un nombre important d'analyses IA et augmenter inutilement la charge du serveur.
+Le seuil par défaut est :
 
-## Technologies utilisées
+```env
+ALERT_LEVEL_THRESHOLD=7
+```
+
+Une valeur trop faible peut entraîner un volume important d'analyses IA.
+
+## Base SQLite
+
+La base peut augmenter progressivement avec le nombre d'alertes analysées.
+
+Pour une utilisation prolongée, une politique de rétention ou de rotation peut être mise en place.
+
+---
+
+# 22. Technologies utilisées
 
 | Technologie | Utilisation |
 |---|---|
 | Wazuh | SIEM et génération des alertes de sécurité |
+| Wazuh Indexer | Stockage et interrogation des alertes |
 | Ollama | Serveur d'inférence locale |
 | Mistral 7B | Modèle de langage utilisé pour l'analyse |
 | Python | Développement du connecteur et du dashboard |
+| Requests | Communication avec Wazuh Indexer et Ollama |
+| python-dotenv | Chargement des variables d'environnement |
 | Flask | Framework web du dashboard |
 | SQLite | Stockage des résultats d'analyse |
 | systemd | Gestion du service du dashboard |
 | JavaScript | Actualisation automatique de l'interface |
 
-## Limites connues
+---
+
+# 23. Limites connues
 
 - L'inférence de Mistral 7B est réalisée sur CPU dans l'environnement de test.
 - Le temps de traitement peut être élevé lors de l'analyse d'une alerte.
-- Plusieurs alertes simultanées peuvent entraîner plusieurs traitements concurrents.
+- Les performances dépendent directement des ressources matérielles disponibles.
+- Le nombre d'alertes traitées est volontairement limité par exécution.
 - La base SQLite nécessite une politique de rétention pour une utilisation prolongée.
-- Le projet est destiné à un environnement de démonstration et de validation technique.
+- Le traitement IA dépend de la disponibilité d'Ollama.
+- Les résultats générés par le modèle doivent être vérifiés par un analyste.
+- Le projet correspond à un environnement de démonstration et de validation technique.
 
-## Sécurité
+---
+
+# 24. Sécurité
 
 Aucune donnée sensible ne doit être publiée dans ce dépôt.
 
@@ -376,28 +921,58 @@ Ne jamais versionner :
 
 Les paramètres sensibles doivent être configurés directement sur le serveur ou fournis via des variables d'environnement.
 
-## Évolution possible
+Le fichier :
+
+```text
+.env.example
+```
+
+sert uniquement de modèle et ne doit pas contenir de véritables identifiants ou mots de passe.
+
+---
+
+# 25. Évolutions possibles
 
 Plusieurs évolutions peuvent être envisagées :
 
-- utilisation d'un serveur disposant d'un GPU pour réduire le temps d'inférence ;
+- utilisation d'un serveur disposant d'un GPU afin de réduire le temps d'inférence ;
 - mise en place d'une véritable file d'attente pour les alertes ;
 - amélioration de la gestion de la concurrence ;
 - mise en place d'une politique automatique de rétention SQLite ;
 - amélioration de l'interface du dashboard ;
 - ajout d'autres modèles de langage locaux ;
-- intégration de mécanismes supplémentaires de supervision et de journalisation.
+- amélioration de la journalisation ;
+- ajout de mécanismes de déduplication des alertes ;
+- extension de l'intégration à d'autres composants de supervision.
 
-## Contexte du projet
+Ces évolutions restent des perspectives et ne constituent pas nécessairement des fonctionnalités déployées dans l'environnement de démonstration.
+
+---
+
+# 26. Contexte du projet
 
 Ce projet a été réalisé dans le cadre d'un **Projet de Fin d'Études (PFE)** portant sur le renforcement d'une architecture SIEM par l'intelligence artificielle.
 
 L'objectif est d'étudier l'intégration d'un modèle de langage local avec Wazuh afin d'enrichir l'interprétation des alertes de sécurité tout en conservant les données et l'inférence dans l'infrastructure locale.
 
-## Auteur
+Le projet porte notamment sur :
+
+- l'intégration de Wazuh avec un modèle de langage local ;
+- l'analyse automatisée des alertes ;
+- l'affichage des résultats dans un dashboard ;
+- la conservation des données dans une base locale ;
+- l'étude des contraintes matérielles liées à l'exécution d'un LLM sur CPU.
+
+---
+
+# 27. Auteur
 
 **Mohamed Adw**
 
-Projet réalisé dans le cadre du cursus **Génie Informatique – Ingénierie de la Cybersécurité**.
+Projet réalisé dans le cadre du cursus :
 
-Année universitaire **2025–2026**.
+**Génie Informatique – Ingénierie de la Cybersécurité**
+
+Année universitaire :
+
+**2025–2026**
