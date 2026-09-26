@@ -314,7 +314,7 @@ rule.level >= ALERT_LEVEL_THRESHOLD
 La valeur utilisée par défaut est :
 
 ```text
-ALERT_LEVEL_THRESHOLD=7
+ALERT_LEVEL_THRESHOLD>=7
 ```
 
 Le nombre d'alertes récupérées est limité par :
